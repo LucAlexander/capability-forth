@@ -474,10 +474,12 @@ const Machine = struct {
 			NOP => {},
 			PSH_DS => {
 				self.ip += 2;
-				const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
-				const cap = (self.cap[self.ip] << 8) + self.cap[self.ip + 1];
-				self.ds.push(data);
-				self.ds_cap.push(cap);
+				if (self.ip < self.mem.len){
+					const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
+					const cap = (self.cap[self.ip] << 8) + self.cap[self.ip + 1];
+					self.ds.push(data);
+					self.ds_cap.push(cap);
+				}
 			},
 			POP_DS => {
 				_ = self.ds.pop();
@@ -501,42 +503,53 @@ const Machine = struct {
 			LD => {
 				const loc = self.ds.pop();
 				const loc_cap = self.ds_cap.pop();
-				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
-				const data = (self.mem[address] << 8) + self.mem[address + 1];
-				const cap = (self.cap[address] << 8) + self.cap[address + 1];
-				if ((address % 2 == 0) and get_read(cap) <= self.cs.top()){
-					self.ds.push(data);
-					self.ds_cap.push(cap);
+				if (loc < self.mem.len){
+					const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+					if (address < self.mem.len){
+						const data = (self.mem[address] << 8) + self.mem[address + 1];
+						const cap = (self.cap[address] << 8) + self.cap[address + 1];
+						if ((address % 2 == 0) and get_read(cap) <= self.cs.top()){
+							self.ds.push(data);
+							self.ds_cap.push(cap);
+							self.ip += 1;
+							return;
+						}
+					}
 				}
-				else{
-					self.ds.push(loc);
-					self.ds_cap.push(loc_cap);
-				}
+				self.ds.push(loc);
+				self.ds_cap.push(loc_cap);
 			},
 			ST => {
 				const loc = self.ds.pop();
 				const loc_cap = self.ds_cap.pop();
-				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
-				const address_cap = (self.cap[loc] << 8) + self.cap[loc + 1];
-				if ((address % 2 == 0) and get_write(address_cap) <= self.cs.top()){
-					const data = self.ds.pop();
-					const cap = self.ds_cap.pop();
-					self.mem[address] = @truncate(data >> 8);
-					self.mem[address+1] = @truncate(data & 0xFF);
-					self.cap[address] = @truncate(cap >> 8);
-					self.cap[address+1] = @truncate(cap & 0xFF);
+				if (loc < self.mem.len){
+					const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+					if (address < self.mem.len){
+						const address_cap = (self.cap[loc] << 8) + self.cap[loc + 1];
+						if ((address % 2 == 0) and get_write(address_cap) <= self.cs.top()){
+							const data = self.ds.pop();
+							const cap = self.ds_cap.pop();
+							self.mem[address] = @truncate(data >> 8);
+							self.mem[address+1] = @truncate(data & 0xFF);
+							self.cap[address] = @truncate(cap >> 8);
+							self.cap[address+1] = @truncate(cap & 0xFF);
+							self.ip += 2;
+							return;
+						}
+					}
 				}
-				else{
-					self.ds.push(loc);
-					self.ds_cap.push(loc_cap);
-				}
+				self.ds.push(loc);
+				self.ds_cap.push(loc_cap);
 			},
 			JMP => {
 				self.ip += 2;
-				const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
-				const cap = (self.cap[data] << 8) + self.cap[data+1];
-				if ((data%2==0) and get_execute(cap) <= self.cs.top()){
-					self.ip = data;
+				if (self.ip < self.mem.len){
+					const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
+					const cap = (self.cap[data] << 8) + self.cap[data+1];
+					if ((data%2==0) and get_execute(cap) <= self.cs.top()){
+						self.ip = data;
+						return;
+					}
 				}
 			},
 			NIP => {
@@ -608,17 +621,20 @@ const Machine = struct {
 			RUN => {
 				const loc = self.ds.pop();
 				const loc_cap = self.ds_cap.pop();
-				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
-				const new_ip = (self.mem[address] << 8) + self.mem[address + 1];
-				const cap = (self.cap[address] << 8) + self.cap[address + 1];
-				if ((address%2 == 0) and get_execute(cap) <= self.cs.top()){
-					self.rs.push(self.ip);
-					self.ip = new_ip;
+				if (loc < self.mem.len){
+					const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+					if (address < self.mem.len){
+						const new_ip = (self.mem[address] << 8) + self.mem[address + 1];
+						const cap = (self.cap[address] << 8) + self.cap[address + 1];
+						if ((address%2 == 0) and get_execute(cap) <= self.cs.top()){
+							self.rs.push(self.ip);
+							self.ip = new_ip;
+							return;
+						}
+					}
 				}
-				else{
-					self.ds.push(loc);
-					self.ds_cap.push(loc_cap);
-				}
+				self.ds.push(loc);
+				self.ds_cap.push(loc_cap);
 			},
 			ADD => {
 				const a = self.ds.pop();
