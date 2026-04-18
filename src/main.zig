@@ -393,6 +393,13 @@ const Stack = struct {
 		self.cursor += 1;
 	}
 
+	pub fn top(self: *Stack) Word {
+		if (self.cursor == 0){
+			return self.data[self.data.len-1];
+		}
+		return self.data[self.cursor-1];
+	}
+	
 	pub fn pop(self: *Stack) Word {
 		if (self.cursor == 0){
 			self.cursor = self.data.len;
@@ -401,6 +408,18 @@ const Stack = struct {
 		return self.data[self.cursor];
 	}
 };
+
+pub fn get_read(cap: Word) u8 {
+	return cap & 0xff0000;
+}
+
+pub fn get_write(cap: Word) u8 {
+	return cap & 0xff00;
+}
+
+pub fn get_execute(cap: Word) u8 {
+	return cap & 0xff;
+}
 
 const Machine = struct {
 	mem: []u8,
@@ -426,16 +445,20 @@ const Machine = struct {
 	}
 
 	pub fn load_rom(self: *Machine, loc: Word, bytes: []u8) void {
-		var i = loc;
+		var i:u64 = loc;
 		while (i < loc+bytes.len){
 			self.mem[i] = bytes[i-loc];
 			i += 1;
 		}
 	}
 
-	pub fn set_cap(self: *Machine, addr: Word, cap: Word) void {
-		self.cap[addr] = @truncate(cap >> 8);
-		self.cap[addr+1] = @truncate(cap & 0xFF);
+	pub fn set_cap(self: *Machine, addr: Word, len: Word, cap: Word) void {
+		var i:u64 = addr;
+		while (i < addr+len){
+			self.cap[i] = @truncate(cap >> 8);
+			self.cap[i+1] = @truncate(cap & 0xFF);
+			i += 1;
+		}
 	}
 
 	pub fn run(self: *Machine, ip: Word) void {
@@ -477,28 +500,44 @@ const Machine = struct {
 			},
 			LD => {
 				const loc = self.ds.pop();
-				_ = self.ds_cap.pop();
+				const loc_cap = self.ds_cap.pop();
 				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
 				const data = (self.mem[address] << 8) + self.mem[address + 1];
 				const cap = (self.cap[address] << 8) + self.cap[address + 1];
-				self.ds.push(data);
-				self.ds_cap.push(cap);
+				if (get_read(cap) <= self.cs.top()){
+					self.ds.push(data);
+					self.ds_cap.push(cap);
+				}
+				else{
+					self.ds.push(loc);
+					self.ds_cap.push(loc_cap);
+				}
 			},
 			ST => {
 				const loc = self.ds.pop();
-				_ = self.ds_cap.pop();
+				const loc_cap = self.ds_cap.pop();
 				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
-				const data = self.ds.pop();
-				const cap = self.ds_cap.pop();
-				self.mem[address] = @truncate(data >> 8);
-				self.mem[address+1] = @truncate(data & 0xFF);
-				self.cap[address] = @truncate(cap >> 8);
-				self.cap[address+1] = @truncate(cap & 0xFF);
+				const address_cap = (self.cap[loc] << 8) + self.cap[loc + 1];
+				if (get_write(address_cap) <= self.cs.top()){
+					const data = self.ds.pop();
+					const cap = self.ds_cap.pop();
+					self.mem[address] = @truncate(data >> 8);
+					self.mem[address+1] = @truncate(data & 0xFF);
+					self.cap[address] = @truncate(cap >> 8);
+					self.cap[address+1] = @truncate(cap & 0xFF);
+				}
+				else{
+					self.ds.push(loc);
+					self.ds_cap.push(loc_cap);
+				}
 			},
 			JMP => {
 				self.ip += 2;
 				const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
-				self.ip = data;
+				const cap = (self.cap[data] << 8) + self.cap[data+1];
+				if (get_execute(cap) <= self.cs.top()){
+					self.ip = data;
+				}
 			},
 			NIP => {
 				const a = self.ds.pop();
@@ -568,11 +607,18 @@ const Machine = struct {
 			},
 			RUN => {
 				const loc = self.ds.pop();
-				_ = self.ds_cap.pop();
+				const loc_cap = self.ds_cap.pop();
 				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
 				const new_ip = (self.mem[address] << 8) + self.mem[address + 1];
-				self.rs.push(self.ip);
-				self.ip = new_ip;
+				const cap = (self.cap[address] << 8) + self.cap[address + 1];
+				if (get_execute(cap) <= self.cs.top()){
+					self.rs.push(self.ip);
+					self.ip = new_ip;
+				}
+				else{
+					self.ds.push(loc);
+					self.ds_cap.push(loc_cap);
+				}
 			},
 			ADD => {
 				const a = self.ds.pop();
@@ -645,4 +691,4 @@ pub fn main() !void {
 	mach.load_rom(0, bytes);
 }
 
-//TODO cap stack manip
+//TODO capabilties actually doing things, capabilties actually representing correctly
