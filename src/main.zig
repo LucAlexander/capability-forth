@@ -22,7 +22,7 @@ const Token = struct {
 
 pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 	var tokens = Buffer(Token).init(mem.*);
-	var i: u64 = 09;
+	var i: u64 = 0;
 	while (i < text.len){
 		const c = text[i];
 		switch(c) {
@@ -72,7 +72,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 						.value = .{
 							.numeric = value
 						}
-					});
+					}) catch unreachable;
 					continue;
 				}
 				else if (std.ascii.isAlphanumeric(c) or c == '_'){
@@ -127,8 +127,8 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 				const save = instructions.items.len;
 				instructions.append(Inst{.data=0}) catch unreachable;
 				try parse(mem, tokens, instructions, close_quote);
-				instructions.append(Inst{ .psh_rt=undefined}) catch unreachable;
-				instructions.items[save].data = instructions.items.len*2;
+				instructions.append(Inst{ .psh_rs=undefined}) catch unreachable;
+				instructions.items[save].data = @intCast(instructions.items.len*2);
 				i += 1;
 				continue;
 			},
@@ -142,7 +142,7 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 			},
 			open_word => {
 				i += 1;
-				const loc = instructions.items.len*2;
+				const loc:Word = @intCast(instructions.items.len*2);
 				const name = tokens[i];
 				if (name.tag != iden){
 					return ParseError.UnexpectedToken;
@@ -151,15 +151,15 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 				const save = instructions.items.len;
 				instructions.append(Inst{.data=0}) catch unreachable;
 				try parse(mem, tokens, instructions, close_word);
-				instructions.append(Inst{ .pop_rt=undefined}) catch unreachable;
+				instructions.append(Inst{ .pop_rs=undefined}) catch unreachable;
 				defs.put(name.value.text, loc) catch unreachable;
-				instructions.items[save].jump = instructions.items.len*2;
+				instructions.items[save].data = @intCast(instructions.items.len*2);
 				if (def_backlog.get(name.value.text)) |list| {
 					for (list.items) |index| {
 						instructions.items[index].data = loc;
 					}
 				}
-				i + 1;
+				i += 1;
 				continue;
 			},
 			close_word => {
@@ -212,21 +212,21 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 					continue;
 				}
 				if (defs.get(tokens[i].value.text)) |address| {
-					instructions.append(Inst{ .psh_rt = undefined}) catch unreachable;
+					instructions.append(Inst{ .psh_rs = undefined}) catch unreachable;
 					instructions.append(Inst{ .jmp=undefined, }) catch unreachable;
 					instructions.append(Inst{ .data = address}) catch unreachable;
 					i += 1;
 					continue;
 				}
 				else{
-					instructions.append(Inst{ .psh_rt = undefined}) catch unreachable;
+					instructions.append(Inst{ .psh_rs = undefined}) catch unreachable;
 					instructions.append(Inst{ .jmp = undefined, }) catch unreachable;
 					instructions.append(Inst{ .data = 0}) catch unreachable;
 					if (def_backlog.getPtr(tokens[i].value.text)) |list| {
 						list.append(instructions.items.len-1) catch unreachable;
 					}
 					else {
-						var list = Buffer(Word).init(mem.*);
+						var list = Buffer(u64).init(mem.*);
 						list.append(instructions.items.len-1) catch unreachable;
 						def_backlog.put(tokens[i].value.text, list) catch unreachable;
 					}
@@ -239,6 +239,9 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 				instructions.append(Inst{ .data = tokens[i].value.numeric }) catch unreachable;
 				i += 1;
 				continue;
+			},
+			else => {
+				return ParseError.UnexpectedToken;
 			}
 		}
 	}
@@ -280,10 +283,28 @@ pub fn code_gen(mem: *const std.mem.Allocator, instructions: Buffer(Inst)) []u8 
 			.dup => {bytes[i] = DUP;},
 			.cut => {bytes[i] = CUT;},
 			.ovr => {bytes[i] = OVR;},
-			.data => {bytes[i] = (inst.data & 0xFF00) >> 8;}
+			.data => {bytes[i] = @truncate((inst.data & 0xFF00) >> 8);}
 		}
+		i += 2;
 	}
 	return bytes;
+}
+
+pub fn get_contents(mem: *const std.mem.Allocator, filename: []const u8) ![]u8 {
+	var infile = std.fs.cwd().openFile(filename, .{}) catch |err| {
+		std.debug.print("File not found: {s}\n", .{filename});
+		return err;
+	};
+	defer infile.close();
+	const stat = infile.stat() catch |err| {
+		std.debug.print("Errored file stat: {s}\n", .{filename});
+		return err;
+	};
+	const contents = infile.readToEndAlloc(mem.*, stat.size+1) catch |err| {
+		std.debug.print("Error reading file: {s}\n", .{filename});
+		return err;
+	};
+	return contents;
 }
 
 pub fn main() !void {
@@ -305,14 +326,13 @@ pub fn main() !void {
 		std.debug.print("   [filename] : evaluate file\n", .{});
 		return;
 	}
-	if (std.mem.eql(u8, args[1], "-i")){
-		idle(&main_mem, &temp_mem, temp_mem_fixed);
-		return;
-	}
 	const filename = args[1];
 	const contents = try get_contents(&main_mem, filename);
 	const tokens = tokenize(&main_mem, contents);
-	const instructions = Buffer(Inst).init(main_mem);
-	parse(&main_mem, tokens.items, instructions, null);
+	var instructions = Buffer(Inst).init(main_mem);
+	parse(&main_mem, tokens.items, &instructions, null) catch unreachable;
 	const bytes = code_gen(&main_mem, instructions);
+	for (bytes) |b| {
+		std.debug.print("{x:02} ", .{b});
+	}
 }
