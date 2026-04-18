@@ -410,11 +410,11 @@ const Stack = struct {
 };
 
 pub fn get_read(cap: Word) u8 {
-	return cap & 0xff0000;
+	return cap & 0xff000 >> 16;
 }
 
 pub fn get_write(cap: Word) u8 {
-	return cap & 0xff00;
+	return cap & 0xff00 >> 8;
 }
 
 pub fn get_execute(cap: Word) u8 {
@@ -504,7 +504,7 @@ const Machine = struct {
 				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
 				const data = (self.mem[address] << 8) + self.mem[address + 1];
 				const cap = (self.cap[address] << 8) + self.cap[address + 1];
-				if (get_read(cap) <= self.cs.top()){
+				if ((address % 2 == 0) and get_read(cap) <= self.cs.top()){
 					self.ds.push(data);
 					self.ds_cap.push(cap);
 				}
@@ -518,7 +518,7 @@ const Machine = struct {
 				const loc_cap = self.ds_cap.pop();
 				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
 				const address_cap = (self.cap[loc] << 8) + self.cap[loc + 1];
-				if (get_write(address_cap) <= self.cs.top()){
+				if ((address % 2 == 0) and get_write(address_cap) <= self.cs.top()){
 					const data = self.ds.pop();
 					const cap = self.ds_cap.pop();
 					self.mem[address] = @truncate(data >> 8);
@@ -535,7 +535,7 @@ const Machine = struct {
 				self.ip += 2;
 				const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
 				const cap = (self.cap[data] << 8) + self.cap[data+1];
-				if (get_execute(cap) <= self.cs.top()){
+				if ((data%2==0) and get_execute(cap) <= self.cs.top()){
 					self.ip = data;
 				}
 			},
@@ -611,7 +611,7 @@ const Machine = struct {
 				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
 				const new_ip = (self.mem[address] << 8) + self.mem[address + 1];
 				const cap = (self.cap[address] << 8) + self.cap[address + 1];
-				if (get_execute(cap) <= self.cs.top()){
+				if ((address%2 == 0) and get_execute(cap) <= self.cs.top()){
 					self.rs.push(self.ip);
 					self.ip = new_ip;
 				}
@@ -690,5 +690,3 @@ pub fn main() !void {
 	var mach = Machine.init(&main_mem, 1024, 512);
 	mach.load_rom(0, bytes);
 }
-
-//TODO capabilties actually doing things, capabilties actually representing correctly
