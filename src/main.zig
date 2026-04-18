@@ -43,7 +43,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 			else => {
 				if (std.ascii.isDigit(c)){
 					i += 1;
-					var value = c-48;
+					var value: Word = c-48;
 					if (text[i] == 'x'){
 						i += 1;
 						while (std.ascii.isHex(text[i]) and i < text.len){
@@ -77,7 +77,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 				}
 				else if (std.ascii.isAlphanumeric(c) or c == '_'){
 					const start = i;
-					while ((std.ascii.isAlphanumeric(c) or c == '_') and i < text.len){
+					while ((std.ascii.isAlphanumeric(text[i]) or c == '_') and i < text.len){
 						i += 1;
 					}
 					tokens.append(Token{
@@ -116,18 +116,19 @@ const ParseError = error {
 	UnexpectedToken,
 };
 
-pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buffer(Inst), close_token: ?TOKEN) ParseError!void {
-	var i: u64 = 0;
+pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, k: u64, instructions: *Buffer(Inst), close_token: ?TOKEN) ParseError!u64 {
+	var i = k;
 	var defs = Map(Word).init(mem.*);
 	var def_backlog = Map(Buffer(u64)).init(mem.*);
 	while (i < tokens.len){
 		switch (tokens[i].tag){
 			open_quote => {
+				i += 1;
 				instructions.append(Inst{.jmp=undefined}) catch unreachable;
 				const save = instructions.items.len;
 				instructions.append(Inst{.data=0}) catch unreachable;
-				try parse(mem, tokens, instructions, close_quote);
-				instructions.append(Inst{ .psh_rs=undefined}) catch unreachable;
+				i = try parse(mem, tokens, i, instructions, close_quote);
+				instructions.append(Inst{ .pop_rs=undefined}) catch unreachable;
 				instructions.items[save].data = @intCast(instructions.items.len*2);
 				i += 1;
 				continue;
@@ -135,7 +136,7 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 			close_quote => {
 				if (close_token)|end|{
 					if (end == close_quote){
-						return;
+						return i;
 					}
 				}
 				return ParseError.UnexpectedToken;
@@ -147,10 +148,11 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 				if (name.tag != iden){
 					return ParseError.UnexpectedToken;
 				}
+				i += 1;
 				instructions.append(Inst{.jmp=undefined}) catch unreachable;
 				const save = instructions.items.len;
 				instructions.append(Inst{.data=0}) catch unreachable;
-				try parse(mem, tokens, instructions, close_word);
+				i = try parse(mem, tokens, i, instructions, close_word);
 				instructions.append(Inst{ .pop_rs=undefined}) catch unreachable;
 				defs.put(name.value.text, loc) catch unreachable;
 				instructions.items[save].data = @intCast(instructions.items.len*2);
@@ -165,7 +167,7 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 			close_word => {
 				if (close_token)|end|{
 					if (end == close_word){
-						return;
+						return i;
 					}
 				}
 				return ParseError.UnexpectedToken;
@@ -245,9 +247,10 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, instructions: *Buff
 			}
 		}
 	}
+	return i;
 }
 
-const OPCODE = Word;
+const OPCODE = u8;
 const NOP = 0;
 const PSH_DS = 1;
 const POP_DS = 2;
@@ -283,7 +286,13 @@ pub fn code_gen(mem: *const std.mem.Allocator, instructions: Buffer(Inst)) []u8 
 			.dup => {bytes[i] = DUP;},
 			.cut => {bytes[i] = CUT;},
 			.ovr => {bytes[i] = OVR;},
-			.data => {bytes[i] = @truncate((inst.data & 0xFF00) >> 8);}
+			.data => {
+				bytes[i] = @truncate((inst.data & 0xFF00) >> 8);
+				i += 1;
+				bytes[i] = @truncate(inst.data & 0xFF);
+				i += 1;
+				continue;
+			}
 		}
 		i += 2;
 	}
@@ -314,7 +323,7 @@ pub fn main() !void {
 	var main_mem_fixed = std.heap.FixedBufferAllocator.init(main_buffer);
 	var temp_mem_fixed = std.heap.FixedBufferAllocator.init(temp_buffer);
 	var main_mem = main_mem_fixed.allocator();
-	var temp_mem = temp_mem_fixed.allocator();
+	_ = temp_mem_fixed.allocator();
 	const args = try std.process.argsAlloc(main_mem);
 	if (args.len == 1){
 		std.debug.print("-h for help\n", .{});
@@ -330,9 +339,11 @@ pub fn main() !void {
 	const contents = try get_contents(&main_mem, filename);
 	const tokens = tokenize(&main_mem, contents);
 	var instructions = Buffer(Inst).init(main_mem);
-	parse(&main_mem, tokens.items, &instructions, null) catch unreachable;
+	_ = parse(&main_mem, tokens.items, 0, &instructions, null) catch unreachable;
 	const bytes = code_gen(&main_mem, instructions);
 	for (bytes) |b| {
 		std.debug.print("{x:02} ", .{b});
 	}
 }
+
+//TODO exec umath
