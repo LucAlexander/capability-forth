@@ -109,6 +109,12 @@ const Inst = union(enum){
 	dup,
 	cut,
 	ovr,
+	swp,
+	run,
+	add,
+	sub,
+	mul,
+	div,
 	data: Word
 };
 
@@ -173,6 +179,16 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, k: u64, instruction
 				return ParseError.UnexpectedToken;
 			},
 			iden => {
+				if (std.mem.eql(u8, tokens[i].value.text, "cap")){
+					instructions.append(Inst{ .psh_cs = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "cup")){
+					instructions.append(Inst{ .pop_cs = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
 				if (std.mem.eql(u8, tokens[i].value.text, "nip")){
 					instructions.append(Inst{ .nip = undefined }) catch unreachable;
 					i += 1;
@@ -180,6 +196,11 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, k: u64, instruction
 				}
 				if (std.mem.eql(u8, tokens[i].value.text, "ovr")){
 					instructions.append(Inst{ .ovr = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "swp")){
+					instructions.append(Inst{ .swp = undefined }) catch unreachable;
 					i += 1;
 					continue;
 				}
@@ -210,6 +231,31 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, k: u64, instruction
 				}
 				if (std.mem.eql(u8, tokens[i].value.text, "ld")){
 					instructions.append(Inst{ .read_ds = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "run")){
+					instructions.append(Inst{ .run = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "add")){
+					instructions.append(Inst{ .add = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "sub")){
+					instructions.append(Inst{ .sub = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "mul")){
+					instructions.append(Inst{ .mul = undefined }) catch unreachable;
+					i += 1;
+					continue;
+				}
+				if (std.mem.eql(u8, tokens[i].value.text, "div")){
+					instructions.append(Inst{ .div = undefined }) catch unreachable;
 					i += 1;
 					continue;
 				}
@@ -266,6 +312,12 @@ const ROT = 11;
 const DUP = 12;
 const CUT = 13;
 const OVR = 14;
+const SWP = 15;
+const RUN = 16;
+const ADD = 17;
+const MUL = 18;
+const SUB = 19;
+const DIV = 20;
 
 pub fn code_gen(mem: *const std.mem.Allocator, instructions: Buffer(Inst)) []u8 {
 	var bytes = mem.alloc(u8, instructions.items.len*2) catch unreachable;
@@ -286,6 +338,12 @@ pub fn code_gen(mem: *const std.mem.Allocator, instructions: Buffer(Inst)) []u8 
 			.dup => {bytes[i] = DUP;},
 			.cut => {bytes[i] = CUT;},
 			.ovr => {bytes[i] = OVR;},
+			.swp => {bytes[i] = SWP;},
+			.run => {bytes[i] = RUN;},
+			.add => {bytes[i] = ADD;},
+			.sub => {bytes[i] = SUB;},
+			.mul => {bytes[i] = MUL;},
+			.div => {bytes[i] = DIV;},
 			.data => {
 				bytes[i] = @truncate((inst.data & 0xFF00) >> 8);
 				i += 1;
@@ -316,6 +374,248 @@ pub fn get_contents(mem: *const std.mem.Allocator, filename: []const u8) ![]u8 {
 	return contents;
 }
 
+const Stack = struct {
+	data: []Word,
+	cursor: Word,
+
+	pub fn init(mem: *const std.mem.Allocator, size: Word) Stack {
+		return Stack{
+			.data = mem.alloc(Word, size) catch unreachable,
+			.cursor = 0
+		};
+	}
+
+	pub fn push(self: *Stack, item: Word) void {
+		if (self.cursor == self.data.len){
+			self.cursor = 0;
+		}
+		self.data[self.cursor] = item;
+		self.cursor += 1;
+	}
+
+	pub fn pop(self: *Stack) Word {
+		if (self.cursor == 0){
+			self.cursor = self.data.len;
+		}
+		self.cursor -= 1;
+		return self.data[self.cursor];
+	}
+};
+
+const Machine = struct {
+	mem: []u8,
+	cap: []u8,
+	cs: Stack,
+	ds: Stack,
+	ds_cap: Stack,
+	rs: Stack,
+	ip: Word,
+	running: bool,
+
+	pub fn init(mem: *const std.mem.Allocator, size: Word, ss: Word) Machine {
+		return Machine{
+			.mem = mem.alloc(u8, size) catch unreachable,
+			.cap = mem.alloc(u8, size) catch unreachable,
+			.cs = Stack.init(mem, ss),
+			.ds = Stack.init(mem, ss),
+			.ds_cap = Stack.init(mem, ss),
+			.rs = Stack.init(mem, ss),
+			.ip = 0,
+			.running = false
+		};
+	}
+
+	pub fn load_rom(self: *Machine, loc: Word, bytes: []u8) void {
+		var i = loc;
+		while (i < loc+bytes.len){
+			self.mem[i] = bytes[i-loc];
+			i += 1;
+		}
+	}
+
+	pub fn set_cap(self: *Machine, addr: Word, cap: Word) void {
+		self.cap[addr] = @truncate(cap >> 8);
+		self.cap[addr+1] = @truncate(cap & 0xFF);
+	}
+
+	pub fn run(self: *Machine, ip: Word) void {
+		self.ip = ip;
+		self.running = true;
+	}
+
+	pub fn step(self: *Machine) void {
+		if (self.running == false){
+			return;
+		}
+		switch (self.mem[self.ip]) {
+			NOP => {},
+			PSH_DS => {
+				self.ip += 2;
+				const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
+				const cap = (self.cap[self.ip] << 8) + self.cap[self.ip + 1];
+				self.ds.push(data);
+				self.ds_cap.push(cap);
+			},
+			POP_DS => {
+				_ = self.ds.pop();
+				_ = self.ds_cap.pop();
+			},
+			PSH_RS => {
+				self.rs.push(self.ip);
+			},
+			POP_RS => {
+				self.ip = self.rs.pop();
+			},
+			PSH_CS => {
+				self.ip += 2;
+				_ = self.ds.pop();
+				const cap = self.ds_cap.pop();
+				self.cs.push(cap);
+			},
+			POP_CS => {
+				_ = self.cs.pop();
+			},
+			LD => {
+				const loc = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+				const data = (self.mem[address] << 8) + self.mem[address + 1];
+				const cap = (self.cap[address] << 8) + self.cap[address + 1];
+				self.ds.push(data);
+				self.ds_cap.push(cap);
+			},
+			ST => {
+				const loc = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+				const data = self.ds.pop();
+				const cap = self.ds_cap.pop();
+				self.mem[address] = @truncate(data >> 8);
+				self.mem[address+1] = @truncate(data & 0xFF);
+				self.cap[address] = @truncate(cap >> 8);
+				self.cap[address+1] = @truncate(cap & 0xFF);
+			},
+			JMP => {
+				self.ip += 2;
+				const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
+				self.ip = data;
+			},
+			NIP => {
+				const a = self.ds.pop();
+				const a_cap = self.ds_cap.pop();
+				_ = self.ds.pop();
+				_ = self.ds_cap.pop();
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+			},
+			OVR => {
+				const a = self.ds.pop();
+				const a_cap = self.ds_cap.pop();
+				const b = self.ds.pop();
+				const b_cap = self.ds_cap.pop();
+				const c = self.ds.pop();
+				const c_cap = self.ds_cap.pop();
+				self.ds.push(b);
+				self.ds_cap.push(b_cap);
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+				self.ds.push(c);
+				self.ds_cap.push(c_cap);
+			},
+			DUP => {
+				const a = self.ds.pop();
+				const a_cap = self.ds_cap.pop();
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+			},
+			CUT => {
+				const a = self.ds.pop();
+				const a_cap = self.ds_cap.pop();
+				const b = self.ds.pop();
+				const b_cap = self.ds_cap.pop();
+				_ = self.ds.pop();
+				_ = self.ds_cap.pop();
+				self.ds.push(b);
+				self.ds_cap.push(b_cap);
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+			},
+			ROT => {
+				const a = self.ds.pop();
+				const a_cap = self.ds_cap.pop();
+				const b = self.ds.pop();
+				const b_cap = self.ds_cap.pop();
+				const c = self.ds.pop();
+				const c_cap = self.ds_cap.pop();
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+				self.ds.push(c);
+				self.ds_cap.push(c_cap);
+				self.ds.push(b);
+				self.ds_cap.push(b_cap);
+			},
+			SWP => {
+				const a = self.ds.pop();
+				const a_cap = self.ds_cap.pop();
+				const b = self.ds.pop();
+				const b_cap = self.ds_cap.pop();
+				self.ds.push(a);
+				self.ds_cap.push(a_cap);
+				self.ds.push(b);
+				self.ds_cap.push(b_cap);
+			},
+			RUN => {
+				const loc = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+				const new_ip = (self.mem[address] << 8) + self.mem[address + 1];
+				self.rs.push(self.ip);
+				self.ip = new_ip;
+			},
+			ADD => {
+				const a = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const b = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const c = a +% b;
+				self.ds.push(c);
+				self.ds_cap.push(0);
+			},
+			MUL => {
+				const a = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const b = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const c = a *% b;
+				self.ds.push(c);
+				self.ds_cap.push(0);
+			},
+			SUB => {
+				const a = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const b = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const c = a -% b;
+				self.ds.push(c);
+				self.ds_cap.push(0);
+			},
+			DIV => {
+				const a = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const b = self.ds.pop();
+				_ = self.ds_cap.pop();
+				const c = a / b;
+				self.ds.push(c);
+				self.ds_cap.push(0);
+			},
+			else => { }
+		}
+		self.ip += 2;
+	}
+};
+
 pub fn main() !void {
 	const heap = std.heap.page_allocator;
 	const main_buffer = heap.alloc(u8, 0x10000) catch unreachable;
@@ -341,9 +641,8 @@ pub fn main() !void {
 	var instructions = Buffer(Inst).init(main_mem);
 	_ = parse(&main_mem, tokens.items, 0, &instructions, null) catch unreachable;
 	const bytes = code_gen(&main_mem, instructions);
-	for (bytes) |b| {
-		std.debug.print("{x:02} ", .{b});
-	}
+	var mach = Machine.init(&main_mem, 1024, 512);
+	mach.load_rom(0, bytes);
 }
 
-//TODO exec umath
+//TODO cap stack manip
