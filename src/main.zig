@@ -86,6 +86,7 @@ pub fn tokenize(mem: *const std.mem.Allocator, text: []const u8) Buffer(Token) {
 							.text = text[start .. i]
 						}
 					}) catch unreachable;
+					continue;
 				}
 			}
 		}
@@ -266,21 +267,19 @@ pub fn parse(mem: *const std.mem.Allocator, tokens: []Token, k: u64, instruction
 					i += 1;
 					continue;
 				}
-				else{
-					instructions.append(Inst{ .psh_rs = undefined}) catch unreachable;
-					instructions.append(Inst{ .jmp = undefined, }) catch unreachable;
-					instructions.append(Inst{ .data = 0}) catch unreachable;
-					if (def_backlog.getPtr(tokens[i].value.text)) |list| {
-						list.append(instructions.items.len-1) catch unreachable;
-					}
-					else {
-						var list = Buffer(u64).init(mem.*);
-						list.append(instructions.items.len-1) catch unreachable;
-						def_backlog.put(tokens[i].value.text, list) catch unreachable;
-					}
-					i += 1;
-					continue;
+				instructions.append(Inst{ .psh_rs = undefined}) catch unreachable;
+				instructions.append(Inst{ .jmp = undefined, }) catch unreachable;
+				instructions.append(Inst{ .data = 0}) catch unreachable;
+				if (def_backlog.getPtr(tokens[i].value.text)) |list| {
+					list.append(instructions.items.len-1) catch unreachable;
 				}
+				else {
+					var list = Buffer(u64).init(mem.*);
+					list.append(instructions.items.len-1) catch unreachable;
+					def_backlog.put(tokens[i].value.text, list) catch unreachable;
+				}
+				i += 1;
+				continue;
 			},
 			number => {
 				instructions.append(Inst{ .psh_ds = undefined}) catch unreachable;
@@ -402,22 +401,22 @@ const Stack = struct {
 	
 	pub fn pop(self: *Stack) Word {
 		if (self.cursor == 0){
-			self.cursor = self.data.len;
+			self.cursor = @intCast(self.data.len);
 		}
 		self.cursor -= 1;
 		return self.data[self.cursor];
 	}
 };
 
-pub fn get_read(cap: Word) u8 {
+pub fn get_read(cap: Word) u16 {
 	return cap & 0xff000 >> 16;
 }
 
-pub fn get_write(cap: Word) u8 {
+pub fn get_write(cap: Word) u16 {
 	return cap & 0xff00 >> 8;
 }
 
-pub fn get_execute(cap: Word) u8 {
+pub fn get_execute(cap: Word) u16 {
 	return cap & 0xff;
 }
 
@@ -475,8 +474,8 @@ const Machine = struct {
 			PSH_DS => {
 				self.ip += 2;
 				if (self.ip < self.mem.len){
-					const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
-					const cap = (self.cap[self.ip] << 8) + self.cap[self.ip + 1];
+					const data = (@as(Word, @intCast(self.mem[self.ip])) << 8) + self.mem[self.ip + 1];
+					const cap = (@as(Word, @intCast(self.cap[self.ip])) << 8) + self.cap[self.ip + 1];
 					self.ds.push(data);
 					self.ds_cap.push(cap);
 				}
@@ -504,10 +503,10 @@ const Machine = struct {
 				const loc = self.ds.pop();
 				const loc_cap = self.ds_cap.pop();
 				if (loc < self.mem.len){
-					const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+					const address = (@as(Word, @intCast(self.mem[loc])) << 8) + self.mem[loc + 1];
 					if (address < self.mem.len){
-						const data = (self.mem[address] << 8) + self.mem[address + 1];
-						const cap = (self.cap[address] << 8) + self.cap[address + 1];
+						const data = (@as(Word, @intCast(self.mem[address])) << 8) + self.mem[address + 1];
+						const cap = (@as(Word, @intCast(self.cap[address])) << 8) + self.cap[address + 1];
 						if ((address % 2 == 0) and get_read(cap) <= self.cs.top()){
 							self.ds.push(data);
 							self.ds_cap.push(cap);
@@ -523,9 +522,9 @@ const Machine = struct {
 				const loc = self.ds.pop();
 				const loc_cap = self.ds_cap.pop();
 				if (loc < self.mem.len){
-					const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+					const address = (@as(Word, @intCast(self.mem[loc])) << 8) + self.mem[loc + 1];
 					if (address < self.mem.len){
-						const address_cap = (self.cap[loc] << 8) + self.cap[loc + 1];
+						const address_cap = (@as(Word, @intCast(self.cap[loc])) << 8) + self.cap[loc + 1];
 						if ((address % 2 == 0) and get_write(address_cap) <= self.cs.top()){
 							const data = self.ds.pop();
 							const cap = self.ds_cap.pop();
@@ -544,8 +543,8 @@ const Machine = struct {
 			JMP => {
 				self.ip += 2;
 				if (self.ip < self.mem.len){
-					const data = (self.mem[self.ip] << 8) + self.mem[self.ip + 1];
-					const cap = (self.cap[data] << 8) + self.cap[data+1];
+					const data = (@as(Word, @intCast(self.mem[self.ip])) << 8) + self.mem[self.ip + 1];
+					const cap = (@as(Word, @intCast(self.cap[data])) << 8) + self.cap[data+1];
 					if ((data%2==0) and get_execute(cap) <= self.cs.top()){
 						self.ip = data;
 						return;
@@ -622,10 +621,10 @@ const Machine = struct {
 				const loc = self.ds.pop();
 				const loc_cap = self.ds_cap.pop();
 				if (loc < self.mem.len){
-					const address = (self.mem[loc] << 8) + self.mem[loc + 1];
+					const address = (@as(Word, @intCast(self.mem[loc])) << 8) + self.mem[loc + 1];
 					if (address < self.mem.len){
-						const new_ip = (self.mem[address] << 8) + self.mem[address + 1];
-						const cap = (self.cap[address] << 8) + self.cap[address + 1];
+						const new_ip = (@as(Word, @intCast(self.mem[address])) << 8) + self.mem[address + 1];
+						const cap = (@as(Word, @intCast(self.cap[address])) << 8) + self.cap[address + 1];
 						if ((address%2 == 0) and get_execute(cap) <= self.cs.top()){
 							self.rs.push(self.ip);
 							self.ip = new_ip;
@@ -703,6 +702,16 @@ pub fn main() !void {
 	var instructions = Buffer(Inst).init(main_mem);
 	_ = parse(&main_mem, tokens.items, 0, &instructions, null) catch unreachable;
 	const bytes = code_gen(&main_mem, instructions);
+	for (bytes) |b| {
+		std.debug.print("{x:02} ", .{b});
+	}
+	std.debug.print("\n", .{});
 	var mach = Machine.init(&main_mem, 1024, 512);
 	mach.load_rom(0, bytes);
+	mach.run(0);
+	while (mach.running){
+		mach.step();
+	}
 }
+
+//TODO make multicore
